@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Icon from "@/components/ui/icon";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface TerminalOutput {
   type: 'stdout' | 'stderr' | 'system';
@@ -9,12 +10,18 @@ interface TerminalOutput {
   timestamp: string;
 }
 
+const API_URL = 'http://localhost:3001';
+const ADMIN_TOKEN = localStorage.getItem('admin_token') || '';
+
 const AdminConsole = () => {
   const [command, setCommand] = useState('');
   const [output, setOutput] = useState<TerminalOutput[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
   const [currentDir, setCurrentDir] = useState<string>('');
   const [isVisible, setIsVisible] = useState(false);
+  const [token, setToken] = useState(ADMIN_TOKEN);
+  const [showTokenInput, setShowTokenInput] = useState(!ADMIN_TOKEN);
+  const [isConnected, setIsConnected] = useState(false);
   const outputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,78 +31,119 @@ const AdminConsole = () => {
   }, [output]);
 
   useEffect(() => {
-    if (isVisible) {
-      fetchCurrentDirectory();
+    if (isVisible && token) {
+      checkConnection();
     }
-  }, [isVisible]);
+  }, [isVisible, token]);
 
-  const fetchCurrentDirectory = async () => {
-    setCurrentDir('/var/www/rusdev-landing');
+  const checkConnection = async () => {
+    try {
+      const response = await fetch(`${API_URL}/health`, {
+        headers: {
+          'X-Admin-Token': token
+        }
+      });
+      
+      if (response.ok) {
+        setIsConnected(true);
+        setShowTokenInput(false);
+        localStorage.setItem('admin_token', token);
+        fetchCurrentDirectory();
+        
+        setOutput(prev => [...prev, {
+          type: 'system',
+          content: '✅ Подключено к серверу',
+          timestamp: new Date().toISOString()
+        }]);
+      } else {
+        setIsConnected(false);
+        setOutput(prev => [...prev, {
+          type: 'stderr',
+          content: '❌ Ошибка аутентификации. Проверьте токен.',
+          timestamp: new Date().toISOString()
+        }]);
+      }
+    } catch (error) {
+      setIsConnected(false);
+      setOutput(prev => [...prev, {
+        type: 'stderr',
+        content: `❌ Не удалось подключиться к серверу: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        timestamp: new Date().toISOString()
+      }]);
+    }
   };
 
-  const getMockResponse = (cmd: string): string => {
-    const lower = cmd.toLowerCase().trim();
-    
-    if (lower === 'pwd') {
-      return '/var/www/rusdev-landing';
-    } else if (lower === 'ls' || lower === 'ls -la' || lower.startsWith('ls ')) {
-      return 'total 48\ndrwxr-xr-x  8 user user  4096 Feb  4 20:15 .\ndrwxr-xr-x  3 user user  4096 Feb  4 18:00 ..\n-rw-r--r--  1 user user   234 Feb  4 19:00 index.html\n-rw-r--r--  1 user user  1024 Feb  4 19:30 styles.css\ndrwxr-xr-x  4 user user  4096 Feb  4 20:00 src\ndrwxr-xr-x  2 user user  4096 Feb  4 18:30 public\n-rw-r--r--  1 user user   512 Feb  4 19:15 package.json';
-    } else if (lower.startsWith('cat ')) {
-      return '<!DOCTYPE html>\n<html>\n<head>\n  <title>RusDev Landing</title>\n</head>\n<body>\n  <h1>Welcome to RusDev</h1>\n</body>\n</html>';
-    } else if (lower === 'whoami') {
-      return 'www-data';
-    } else if (lower === 'uname -a' || lower === 'uname') {
-      return 'Linux rusdev-server 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux';
-    } else if (lower === 'date') {
-      return new Date().toString();
-    } else if (lower.startsWith('echo ')) {
-      return cmd.substring(5);
-    } else if (lower.startsWith('cd ')) {
-      const newDir = cmd.substring(3).trim();
-      setCurrentDir(newDir.startsWith('/') ? newDir : `/var/www/rusdev-landing/${newDir}`);
-      return '';
-    } else if (lower === 'df -h' || lower === 'df') {
-      return 'Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   12G   36G  25% /';
-    } else if (lower === 'free -h' || lower === 'free') {
-      return '              total        used        free      shared  buff/cache   available\nMem:          7.8Gi       2.1Gi       3.2Gi       156Mi       2.5Gi       5.3Gi\nSwap:         2.0Gi          0B       2.0Gi';
-    } else if (lower.startsWith('ps ')) {
-      return '  PID TTY          TIME CMD\n 1234 pts/0    00:00:01 bash\n 5678 pts/0    00:00:00 node\n 9012 pts/0    00:00:00 ps';
-    } else {
-      return `bash: ${cmd.split(' ')[0]}: command not found`;
+  const fetchCurrentDirectory = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Token': token
+        },
+        body: JSON.stringify({ command: 'pwd' })
+      });
+      
+      const data = await response.json();
+      if (data.success && data.output) {
+        setCurrentDir(data.output.trim());
+      }
+    } catch (error) {
+      console.error('Error fetching directory:', error);
     }
   };
 
   const executeCommand = async (cmd: string) => {
-    if (!cmd.trim() || isExecuting) return;
+    if (!cmd.trim() || isExecuting || !isConnected) return;
 
     setIsExecuting(true);
-    const timestamp = new Date().toISOString();
-
-    setOutput((prev) => [
-      ...prev,
-      {
-        type: 'system',
-        content: `$ ${cmd}`,
-        timestamp,
-      },
-    ]);
-
-    await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));
-
-    const response = getMockResponse(cmd);
     
-    if (response) {
-      setOutput((prev) => [
-        ...prev,
-        {
-          type: response.includes('not found') || response.includes('error') ? 'stderr' : 'stdout',
-          content: response,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    }
+    setOutput(prev => [...prev, {
+      type: 'system',
+      content: `$ ${cmd}`,
+      timestamp: new Date().toISOString()
+    }]);
 
-    setIsExecuting(false);
+    try {
+      const response = await fetch(`${API_URL}/api/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Token': token
+        },
+        body: JSON.stringify({ command: cmd })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        if (data.output) {
+          setOutput(prev => [...prev, {
+            type: 'stdout',
+            content: data.output,
+            timestamp: new Date().toISOString()
+          }]);
+        }
+        
+        if (cmd.toLowerCase().startsWith('cd ')) {
+          fetchCurrentDirectory();
+        }
+      } else {
+        setOutput(prev => [...prev, {
+          type: 'stderr',
+          content: data.error || 'Command execution failed',
+          timestamp: new Date().toISOString()
+        }]);
+      }
+    } catch (error) {
+      setOutput(prev => [...prev, {
+        type: 'stderr',
+        content: `Ошибка выполнения: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        timestamp: new Date().toISOString()
+      }]);
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -104,7 +152,20 @@ const AdminConsole = () => {
     setCommand('');
   };
 
+  const handleTokenSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    checkConnection();
+  };
+
   const clearOutput = () => {
+    setOutput([]);
+  };
+
+  const disconnect = () => {
+    setIsConnected(false);
+    setToken('');
+    localStorage.removeItem('admin_token');
+    setShowTokenInput(true);
     setOutput([]);
   };
 
@@ -132,22 +193,39 @@ const AdminConsole = () => {
             <h2 className="text-lg font-bold text-white">
               Административная консоль сервера
             </h2>
-            {currentDir && (
+            {isConnected && currentDir && (
               <span className="text-sm text-gray-400">
                 [{currentDir}]
               </span>
             )}
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-xs text-gray-400">
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
           </div>
           <div className="flex gap-2">
-            <Button
-              onClick={clearOutput}
-              variant="outline"
-              size="sm"
-              className="text-white border-gray-600 hover:bg-gray-800"
-            >
-              <Icon name="Trash2" className="mr-1" size={16} />
-              Очистить
-            </Button>
+            {isConnected && (
+              <>
+                <Button
+                  onClick={clearOutput}
+                  variant="outline"
+                  size="sm"
+                  className="text-white border-gray-600 hover:bg-gray-800"
+                >
+                  <Icon name="Trash2" className="mr-1" size={16} />
+                  Очистить
+                </Button>
+                <Button
+                  onClick={disconnect}
+                  variant="outline"
+                  size="sm"
+                  className="text-red-400 border-red-600 hover:bg-red-900/20"
+                >
+                  <Icon name="Power" className="mr-1" size={16} />
+                  Отключить
+                </Button>
+              </>
+            )}
             <Button
               onClick={() => setIsVisible(false)}
               variant="outline"
@@ -159,12 +237,39 @@ const AdminConsole = () => {
           </div>
         </div>
 
+        {showTokenInput && !isConnected && (
+          <div className="p-4 bg-gray-800/50">
+            <Alert className="bg-yellow-900/20 border-yellow-600">
+              <Icon name="AlertTriangle" className="h-4 w-4 text-yellow-500" />
+              <AlertDescription className="text-yellow-200 text-sm">
+                Для работы консоли требуется токен доступа. Найдите его в логах сервера или файле .env
+              </AlertDescription>
+            </Alert>
+            <form onSubmit={handleTokenSubmit} className="mt-3 flex gap-2">
+              <Input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="Введите токен доступа..."
+                className="bg-black border-gray-700 text-green-400 focus:border-green-500 font-mono flex-1"
+              />
+              <Button 
+                type="submit"
+                className="bg-green-600 hover:bg-green-700 text-white"
+              >
+                <Icon name="Key" className="mr-2" size={16} />
+                Подключить
+              </Button>
+            </form>
+          </div>
+        )}
+
         <div
           ref={outputRef}
           className="overflow-y-auto p-4 space-y-1"
-          style={{ height: 'calc(60vh - 120px)' }}
+          style={{ height: showTokenInput ? 'calc(60vh - 200px)' : 'calc(60vh - 120px)' }}
         >
-          {output.length === 0 && (
+          {output.length === 0 && isConnected && (
             <div className="text-gray-500 text-sm">
               ⚠️ Административная консоль активна. Все команды выполняются напрямую на сервере.
               <br />
@@ -201,16 +306,16 @@ const AdminConsole = () => {
               <Input
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
-                placeholder="Введите команду..."
+                placeholder={isConnected ? "Введите команду..." : "Подключитесь к серверу..."}
                 className="pl-8 bg-black border-gray-700 text-green-400 focus:border-green-500 font-mono"
-                disabled={isExecuting}
-                autoFocus
+                disabled={isExecuting || !isConnected}
+                autoFocus={isConnected}
               />
             </div>
             <Button
               type="submit"
-              disabled={isExecuting || !command.trim()}
-              className="bg-green-600 hover:bg-green-700 text-white"
+              disabled={isExecuting || !command.trim() || !isConnected}
+              className="bg-green-600 hover:bg-green-700 text-white disabled:opacity-50"
             >
               <Icon name="Play" className="mr-1" size={16} />
               Выполнить

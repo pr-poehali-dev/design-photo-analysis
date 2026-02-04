@@ -1,0 +1,22 @@
+[Unit]
+Description=RusDev Admin Console Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/rusdev-landing
+Environment="PORT=3001"
+Environment="WORKING_DIR=/var/www/rusdev-landing"
+Environment="ADMIN_TOKEN=your-secret-token-here-change-this"
+Environment="ALLOWED_ORIGINS=http://localhost:5173,https://preview--design-photo-analysis.poehali.dev"
+Environment="NODE_ENV=production"
+ExecStart=/usr/bin/node /var/www/rusdev-landing/admin-server/server.js
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=rusdev-admin
+
+[Install]
+WantedBy=multi-user.target
